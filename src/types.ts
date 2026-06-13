@@ -4,4 +4,39 @@ export interface RadioStation {
   genre: string
   streamUrl: string
   logoUrl: string
+  mediaType?: 'radio' | 'podcast' | 'podcast-show'
+  collectionId?: number
+  releaseDate?: string
+}
+
+export interface RadioBrowserStation {
+  stationuuid: string
+  name: string
+  url_resolved: string
+  favicon: string
+  tags: string
+  country: string
+  codec: string
+  bitrate: number
+}
+
+export interface PodcastEpisode {
+  trackId: number
+  trackName: string
+  collectionName: string
+  episodeUrl: string
+  artworkUrl600?: string
+  artworkUrl160?: string
+  releaseDate: string
+  episodeContentType?: string
+}
+
+export interface PodcastShow {
+  collectionId: number
+  collectionName: string
+  artistName: string
+  artworkUrl600?: string
+  artworkUrl100?: string
+  primaryGenreName?: string
+  trackCount?: number
 }
