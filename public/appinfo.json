@@ -1,0 +1,14 @@
+{
+  "id": "com.webradio.app",
+  "version": "1.0.0",
+  "vendor": "Web Radio",
+  "type": "web",
+  "main": "index.html",
+  "title": "Web Radio",
+  "name": "Web Radio",
+  "icon": "icon.png",
+  "largeIcon": "largeIcon.png",
+  "appDescription": "TV-optimiertes Internetradio für LG webOS",
+  "resolution": "1920x1080",
+  "appWgtKeepAlive": "vdk"
+}
