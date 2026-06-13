@@ -7,6 +7,12 @@ export interface RadioStation {
   mediaType?: 'radio' | 'podcast' | 'podcast-show'
   collectionId?: number
   releaseDate?: string
+  lastPlayedAt?: number
+}
+
+export interface StreamMetadata {
+  title: string
+  station: string
 }
 
 export interface RadioBrowserStation {
@@ -18,6 +24,7 @@ export interface RadioBrowserStation {
   country: string
   codec: string
   bitrate: number
+  hls: number
 }
 
 export interface PodcastEpisode {
