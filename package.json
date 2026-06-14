@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
+    "package:webos": "npm run build && ares-package dist",
     "preview": "vite preview --host 0.0.0.0",
     "proxy": "tsx server/index.ts",
     "serve": "tsx server/index.ts",

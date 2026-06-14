@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { ChangeEvent, FormEvent } from 'react'
+import type { FormEvent } from 'react'
 import type {
   PodcastEpisode,
   PodcastShow,
@@ -31,7 +31,6 @@ const PODCAST_FOCUS = -5
 const FAVORITES_FOCUS = -4
 const SEARCH_FOCUS = -3
 const STAR_FOCUS = -2
-const IMPORT_FOCUS = -1
 const HEADER_FOCUSES = [
   RADIO_FOCUS,
   PODCAST_FOCUS,
@@ -39,7 +38,6 @@ const HEADER_FOCUSES = [
   HISTORY_FOCUS,
   SEARCH_FOCUS,
   STAR_FOCUS,
-  IMPORT_FOCUS,
 ]
 const RADIO_BROWSER_API = 'https://de1.api.radio-browser.info/json/stations/search'
 const PODCAST_API = 'https://itunes.apple.com'
@@ -50,12 +48,52 @@ const PODCAST_POSITIONS_KEY = 'webos-radio-podcast-positions'
 const PODCAST_SUBSCRIPTIONS_KEY = 'webos-radio-podcast-subscriptions'
 const KNOWN_EPISODES_KEY = 'webos-radio-known-episodes'
 const HISTORY_KEY = 'webos-radio-history'
+const NAVIGATION_STATE_KEY = 'webos-radio-navigation-state'
 
 type View = 'radio' | 'favorites' | 'subscriptions' | 'history' | 'podcast-shows' | 'podcast-episodes' | 'local'
 type EpisodeFilter = 'newest' | 'oldest' | 'unheard' | 'heard'
 
+interface NavigationState {
+  items: RadioStation[]
+  view: View
+  activeIndex: number
+  lastListIndex: number
+  playerReturnFocus: number
+  podcastShows: RadioStation[]
+  podcastEpisodes: RadioStation[]
+  selectedPodcast: RadioStation | null
+  currentStation: RadioStation | null
+  episodeFilter: EpisodeFilter
+}
+
 const PLAYBACK_SPEEDS = [0.75, 1, 1.25, 1.5, 2]
 const SLEEP_OPTIONS = [0, 15, 30, 60, 90]
+
+const views: View[] = ['radio', 'favorites', 'subscriptions', 'history', 'podcast-shows', 'podcast-episodes', 'local']
+const episodeFilters: EpisodeFilter[] = ['newest', 'oldest', 'unheard', 'heard']
+
+function loadNavigationState(): NavigationState | null {
+  try {
+    const stored = JSON.parse(localStorage.getItem(NAVIGATION_STATE_KEY) ?? 'null') as Partial<NavigationState> | null
+    if (!stored || !views.includes(stored.view as View) || !Array.isArray(stored.items)) return null
+    return {
+      items: stored.items,
+      view: stored.view as View,
+      activeIndex: typeof stored.activeIndex === 'number' ? stored.activeIndex : 0,
+      lastListIndex: typeof stored.lastListIndex === 'number' ? stored.lastListIndex : 0,
+      playerReturnFocus: typeof stored.playerReturnFocus === 'number' ? stored.playerReturnFocus : 0,
+      podcastShows: Array.isArray(stored.podcastShows) ? stored.podcastShows : [],
+      podcastEpisodes: Array.isArray(stored.podcastEpisodes) ? stored.podcastEpisodes : [],
+      selectedPodcast: stored.selectedPodcast ?? null,
+      currentStation: stored.currentStation ?? null,
+      episodeFilter: episodeFilters.includes(stored.episodeFilter as EpisodeFilter)
+        ? stored.episodeFilter as EpisodeFilter
+        : 'newest',
+    }
+  } catch {
+    return null
+  }
+}
 
 const mediaErrorMessages: Record<number, string> = {
   1: 'Die Wiedergabe wurde abgebrochen.',
@@ -141,10 +179,6 @@ function requestPodcastJsonp<T>(path: 'search' | 'lookup', params: Record<string
   })
 }
 
-function getAttribute(line: string, attribute: string) {
-  return line.match(new RegExp(`${attribute}="([^"]*)"`, 'i'))?.[1]?.trim() ?? ''
-}
-
 function normalizeMediaUrl(url: string) {
   return url.trim().replace(/&amp;/gi, '&')
 }
@@ -188,6 +222,19 @@ function favoritesFirst(entries: RadioStation[], favoriteIds: Set<string>) {
   ]
 }
 
+function isSameMedia(first: RadioStation, second: RadioStation) {
+  if (first.id === second.id) return true
+  return Boolean(first.streamUrl && second.streamUrl
+    && normalizeMediaUrl(first.streamUrl) === normalizeMediaUrl(second.streamUrl))
+}
+
+function prependPreferred(entries: RadioStation[], preferredEntries: RadioStation[]) {
+  return [
+    ...preferredEntries,
+    ...entries.filter((entry) => !preferredEntries.some((preferred) => isSameMedia(entry, preferred))),
+  ]
+}
+
 function getPlayableMediaUrl(url: string) {
   const normalizedUrl = normalizeMediaUrl(url)
   if (!/^https?:\/\//i.test(normalizedUrl)) return normalizedUrl
@@ -205,38 +252,6 @@ function getMetadataUrl(url: string) {
   const sameOriginProxy = window.location.protocol === 'http:' || window.location.protocol === 'https:'
   const proxyBase = configuredProxy || (sameOriginProxy ? '/media-metadata' : '')
   return proxyBase ? `${proxyBase}?url=${encodeURIComponent(normalizedUrl)}` : ''
-}
-
-function parseM3u(content: string, fileName: string): RadioStation[] {
-  const lines = content.replace(/^\uFEFF/, '').split(/\r?\n/)
-  const parsed: RadioStation[] = []
-  let metadata: { name: string; genre: string; logoUrl: string } | null = null
-
-  for (const rawLine of lines) {
-    const line = rawLine.trim()
-    if (!line) continue
-    if (line.toUpperCase().startsWith('#EXTINF:')) {
-      const commaIndex = line.indexOf(',')
-      metadata = {
-        name: commaIndex >= 0 ? line.slice(commaIndex + 1).trim() : '',
-        genre: getAttribute(line, 'group-title') || 'Eigene Playlist',
-        logoUrl: getAttribute(line, 'tvg-logo'),
-      }
-      continue
-    }
-    if (line.startsWith('#')) continue
-
-    parsed.push({
-      id: `m3u-${Date.now()}-${parsed.length}`,
-      name: metadata?.name || `Sender ${parsed.length + 1}`,
-      genre: metadata?.genre || fileName.replace(/\.m3u8?$/i, '') || 'Eigene Playlist',
-      streamUrl: line,
-      logoUrl: metadata?.logoUrl || '',
-      mediaType: 'radio',
-    })
-    metadata = null
-  }
-  return parsed
 }
 
 function StationLogo({
@@ -274,19 +289,19 @@ function StationLogo({
 }
 
 function App() {
+  const [initialNavigationState] = useState(loadNavigationState)
   const audioRef = useRef<HTMLAudioElement>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const pendingResumeRef = useRef(0)
   const lastPositionSaveRef = useRef(0)
   const retryCountRef = useRef(0)
   const retryTimerRef = useRef<number | null>(null)
   const userStoppedRef = useRef(false)
-  const [items, setItems] = useState<RadioStation[]>(defaultStations)
-  const [lastListIndex, setLastListIndex] = useState(0)
-  const [podcastShows, setPodcastShows] = useState<RadioStation[]>([])
-  const [podcastEpisodes, setPodcastEpisodes] = useState<RadioStation[]>([])
-  const [episodeFilter, setEpisodeFilter] = useState<EpisodeFilter>('newest')
+  const [items, setItems] = useState<RadioStation[]>(initialNavigationState?.items ?? defaultStations)
+  const [lastListIndex, setLastListIndex] = useState(initialNavigationState?.lastListIndex ?? 0)
+  const [podcastShows, setPodcastShows] = useState<RadioStation[]>(initialNavigationState?.podcastShows ?? [])
+  const [podcastEpisodes, setPodcastEpisodes] = useState<RadioStation[]>(initialNavigationState?.podcastEpisodes ?? [])
+  const [episodeFilter, setEpisodeFilter] = useState<EpisodeFilter>(initialNavigationState?.episodeFilter ?? 'newest')
   const [listenedEpisodes, setListenedEpisodes] = useState<string[]>(() => {
     try {
       return JSON.parse(localStorage.getItem(LISTENED_EPISODES_KEY) ?? '[]') as string[]
@@ -323,11 +338,11 @@ function App() {
       return []
     }
   })
-  const [view, setView] = useState<View>('local')
-  const [activeIndex, setActiveIndex] = useState(0)
-  const [playerReturnFocus, setPlayerReturnFocus] = useState(0)
-  const [currentStation, setCurrentStation] = useState<RadioStation | null>(null)
-  const [selectedPodcast, setSelectedPodcast] = useState<RadioStation | null>(null)
+  const [view, setView] = useState<View>(initialNavigationState?.view ?? 'local')
+  const [activeIndex, setActiveIndex] = useState(initialNavigationState?.activeIndex ?? 0)
+  const [playerReturnFocus, setPlayerReturnFocus] = useState(initialNavigationState?.playerReturnFocus ?? 0)
+  const [currentStation, setCurrentStation] = useState<RadioStation | null>(initialNavigationState?.currentStation ?? null)
+  const [selectedPodcast, setSelectedPodcast] = useState<RadioStation | null>(initialNavigationState?.selectedPodcast ?? null)
   const [favorites, setFavorites] = useState<RadioStation[]>(() => {
     try {
       return JSON.parse(localStorage.getItem(FAVORITES_KEY) ?? '[]') as RadioStation[]
@@ -350,6 +365,8 @@ function App() {
   const [errorMessage, setErrorMessage] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [isSearchOpen, setIsSearchOpen] = useState(false)
+  const [favoriteRemovalTarget, setFavoriteRemovalTarget] = useState<RadioStation | null>(null)
+  const [favoriteRemovalAction, setFavoriteRemovalAction] = useState<'cancel' | 'remove'>('cancel')
   const [searchTerm, setSearchTerm] = useState('')
   const [playbackSpeed, setPlaybackSpeed] = useState(1)
   const [sleepMinutes, setSleepMinutes] = useState(0)
@@ -358,7 +375,28 @@ function App() {
   const [streamMetadata, setStreamMetadata] = useState<StreamMetadata>({ title: '', station: '' })
 
   const favoriteIds = useMemo(() => new Set(favorites.map((favorite) => favorite.id)), [favorites])
-  const orderedItems = useMemo(() => favoritesFirst(items, favoriteIds), [favoriteIds, items])
+  const subscriptionIds = useMemo(() => new Set(subscriptions.map((subscription) => subscription.id)), [subscriptions])
+  const preferredIds = useMemo(
+    () => new Set([...favoriteIds, ...subscriptionIds]),
+    [favoriteIds, subscriptionIds],
+  )
+  const preferredEntries = useMemo(() => {
+    if (view === 'radio' || view === 'local') {
+      return favorites.filter((favorite) => favorite.mediaType === 'radio')
+    }
+    if (view === 'podcast-shows') return subscriptions
+    if (view === 'podcast-episodes') {
+      return favorites.filter((favorite) => favorite.mediaType === 'podcast'
+        && (!selectedPodcast?.collectionId || favorite.collectionId === selectedPodcast.collectionId))
+    }
+    return []
+  }, [favorites, selectedPodcast, subscriptions, view])
+  const orderedItems = useMemo(
+    () => preferredEntries.length
+      ? prependPreferred(items, preferredEntries)
+      : favoritesFirst(items, preferredIds),
+    [items, preferredEntries, preferredIds],
+  )
   const listIndex = activeIndex < 0 ? lastListIndex : activeIndex
   const pageIndex = Math.floor(listIndex / PAGE_SIZE)
   const pageCount = Math.max(1, Math.ceil(orderedItems.length / PAGE_SIZE))
@@ -375,12 +413,15 @@ function App() {
       ? currentStation
       : null
   const listenedEpisodeIds = useMemo(() => new Set(listenedEpisodes), [listenedEpisodes])
-  const subscriptionIds = useMemo(() => new Set(subscriptions.map((subscription) => subscription.id)), [subscriptions])
   const newEpisodeIdSet = useMemo(() => new Set(newEpisodeIds), [newEpisodeIds])
+  const isFavoriteEntry = useCallback(
+    (entry: RadioStation) => favorites.some((favorite) => isSameMedia(entry, favorite)),
+    [favorites],
+  )
   const isFavoriteTarget = favoriteTarget
     ? favoriteTarget.mediaType === 'podcast-show'
       ? subscriptionIds.has(favoriteTarget.id)
-      : favoriteIds.has(favoriteTarget.id)
+      : isFavoriteEntry(favoriteTarget)
     : false
 
   useEffect(() => {
@@ -411,6 +452,33 @@ function App() {
   useEffect(() => {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history))
   }, [history])
+
+  useEffect(() => {
+    const navigationState: NavigationState = {
+      items,
+      view,
+      activeIndex,
+      lastListIndex,
+      playerReturnFocus,
+      podcastShows,
+      podcastEpisodes,
+      selectedPodcast,
+      currentStation,
+      episodeFilter,
+    }
+    localStorage.setItem(NAVIGATION_STATE_KEY, JSON.stringify(navigationState))
+  }, [
+    activeIndex,
+    currentStation,
+    episodeFilter,
+    items,
+    lastListIndex,
+    playerReturnFocus,
+    podcastEpisodes,
+    podcastShows,
+    selectedPodcast,
+    view,
+  ])
 
   useEffect(() => {
     const legacySubscriptions = favorites.filter((favorite) => favorite.mediaType === 'podcast-show')
@@ -598,6 +666,11 @@ function App() {
       return
     }
 
+    if (!audio.getAttribute('src')) {
+      playStation(currentStation)
+      return
+    }
+
     if (audio.paused) {
       userStoppedRef.current = false
       audio.defaultMuted = isMuted
@@ -613,7 +686,7 @@ function App() {
       audio.pause()
       setPlaybackMessage('PAUSE')
     }
-  }, [currentStation, isMuted, volume])
+  }, [currentStation, isMuted, playStation, volume])
 
   useEffect(() => {
     if (!sleepEndsAt) return
@@ -819,6 +892,17 @@ function App() {
     }
   }, [knownEpisodes, listenedEpisodeIds, showItems, subscriptionIds])
 
+  const removeFavorite = useCallback((target: RadioStation) => {
+    setFavorites((current) => current.filter((favorite) => !isSameMedia(favorite, target)))
+    if (view === 'favorites') {
+      setItems((current) => current.filter((item) => !isSameMedia(item, target)))
+      setActiveIndex((current) => Math.max(0, Math.min(current, orderedItems.length - 2)))
+    }
+    setStatusMessage(`${target.mediaType === 'podcast' ? 'Podcast-Folge' : 'Radio'} aus Favoriten entfernt.`)
+    setFavoriteRemovalTarget(null)
+    setFavoriteRemovalAction('cancel')
+  }, [orderedItems.length, view])
+
   const toggleFavorite = useCallback(() => {
     if (!favoriteTarget) {
       setStatusMessage('Wähle zuerst ein Radio, einen Podcast oder eine Folge aus.')
@@ -835,26 +919,35 @@ function App() {
       return
     }
 
+    const exists = favorites.some((favorite) => isSameMedia(favorite, favoriteTarget))
+    if (exists) {
+      setFavoriteRemovalTarget(favoriteTarget)
+      setFavoriteRemovalAction('cancel')
+      return
+    }
+
     setFavorites((current) => {
-      const exists = current.some((favorite) => favorite.id === favoriteTarget.id)
-      const typeLabel = favoriteTarget.mediaType === 'podcast-show'
-        ? 'Podcast'
-        : favoriteTarget.mediaType === 'podcast'
-          ? 'Podcast-Folge'
-          : 'Radio'
-      setStatusMessage(exists ? `${typeLabel} aus Favoriten entfernt.` : `${typeLabel} zu Favoriten hinzugefügt.`)
-      const nextFavorites = exists
-        ? current.filter((favorite) => favorite.id !== favoriteTarget.id)
-        : [...current, favoriteTarget]
+      const nextFavorites = [...current, favoriteTarget]
+      const typeLabel = favoriteTarget.mediaType === 'podcast' ? 'Podcast-Folge' : 'Radio'
+      setStatusMessage(`${typeLabel} zu Favoriten hinzugefügt.`)
       const nextFavoriteIds = new Set(nextFavorites.map((favorite) => favorite.id))
-      const nextIndex = favoritesFirst(items, nextFavoriteIds).findIndex((item) => item.id === favoriteTarget.id)
+      const nextPreferred = view === 'radio' || view === 'local'
+        ? nextFavorites.filter((favorite) => favorite.mediaType === 'radio')
+        : view === 'podcast-episodes'
+          ? nextFavorites.filter((favorite) => favorite.mediaType === 'podcast'
+            && (!selectedPodcast?.collectionId || favorite.collectionId === selectedPodcast.collectionId))
+          : []
+      const nextItems = nextPreferred.length
+        ? prependPreferred(items, nextPreferred)
+        : favoritesFirst(items, nextFavoriteIds)
+      const nextIndex = nextItems.findIndex((item) => isSameMedia(item, favoriteTarget))
       if (nextIndex >= 0) {
         setActiveIndex(nextIndex)
         setLastListIndex(nextIndex)
       }
       return nextFavorites
     })
-  }, [favoriteTarget, items])
+  }, [favoriteTarget, favorites, items, selectedPodcast, view])
 
   const showFavorites = useCallback(() => {
     const relevantFavorites = view.startsWith('podcast')
@@ -900,25 +993,23 @@ function App() {
     else void loadRadioCatalog(term)
   }, [loadPodcastShows, loadRadioCatalog, searchTerm, view])
 
-  const importM3u = useCallback((event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file) return
-    const reader = new FileReader()
-    reader.onload = () => {
-      const imported = parseM3u(String(reader.result ?? ''), file.name)
-      if (!imported.length) {
-        setStatusMessage('Keine Stream-URLs in der Datei gefunden.')
-        return
-      }
-      showItems(imported, 'local', `${imported.length} Sender aus ${file.name} geladen.`)
-    }
-    reader.onerror = () => setStatusMessage('Die M3U-Datei konnte nicht gelesen werden.')
-    reader.readAsText(file)
-    event.target.value = ''
-  }, [showItems])
-
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (favoriteRemovalTarget) {
+        event.preventDefault()
+        const isOkKey = event.key === 'Enter' || event.keyCode === 13
+        const isBackKey = event.key === 'Escape' || event.keyCode === 461
+        if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+          setFavoriteRemovalAction((current) => current === 'cancel' ? 'remove' : 'cancel')
+        } else if (isOkKey) {
+          if (favoriteRemovalAction === 'remove') removeFavorite(favoriteRemovalTarget)
+          else setFavoriteRemovalTarget(null)
+        } else if (isBackKey) {
+          setFavoriteRemovalTarget(null)
+          setFavoriteRemovalAction('cancel')
+        }
+        return
+      }
       if (isSearchOpen) return
       const isOkKey = event.key === 'Enter' || event.keyCode === 13
       const isFavoriteKey = event.key.toLowerCase() === 'f' || event.keyCode === 405
@@ -976,7 +1067,6 @@ function App() {
         else if (activeIndex === HISTORY_FOCUS) showHistory()
         else if (activeIndex === SEARCH_FOCUS) setIsSearchOpen(true)
         else if (activeIndex === STAR_FOCUS) toggleFavorite()
-        else if (activeIndex === IMPORT_FOCUS) fileInputRef.current?.click()
         else if (orderedItems[activeIndex]) activateItem(orderedItems[activeIndex])
         return
       }
@@ -1085,6 +1175,8 @@ function App() {
     duration,
     episodeFilter,
     focusPlayer,
+    favoriteRemovalAction,
+    favoriteRemovalTarget,
     goBackFromEpisodes,
     isSearchOpen,
     orderedItems,
@@ -1092,6 +1184,7 @@ function App() {
     loadPodcastShows,
     loadRadioCatalog,
     playerReturnFocus,
+    removeFavorite,
     showFavorites,
     showHistory,
     showSubscriptions,
@@ -1142,9 +1235,8 @@ function App() {
       active: view === 'favorites' || view === 'subscriptions',
     },
     { focus: HISTORY_FOCUS, label: 'Verlauf', action: showHistory, active: view === 'history' },
-    { focus: SEARCH_FOCUS, label: 'Suche', action: () => setIsSearchOpen(true), active: false },
+    { focus: SEARCH_FOCUS, label: 'search', action: () => setIsSearchOpen(true), active: false },
     { focus: STAR_FOCUS, label: isFavoriteTarget ? '★' : '☆', action: toggleFavorite, active: isFavoriteTarget },
-    { focus: IMPORT_FOCUS, label: 'M3U', action: () => fileInputRef.current?.click(), active: view === 'local' },
   ]
 
   const episodeFilterButtons: Array<{
@@ -1243,28 +1335,15 @@ function App() {
           setIsMuted(audio.muted)
         }}
       />
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".m3u,.m3u8,audio/x-mpegurl,application/vnd.apple.mpegurl"
-        onChange={importM3u}
-        className="hidden"
-      />
-
       <div className="grid h-full grid-cols-[49%_51%]">
         <section className="flex h-full flex-col border-r border-slate-700/70 bg-slate-950/40 px-10 py-7">
           <header className="mb-5">
-            <div className="flex items-end justify-between gap-6">
-              <div className="min-w-0">
-                <p className="text-base font-semibold uppercase tracking-[0.35em] text-purple-400">Web Radio</p>
-                <h1 className="mt-1 max-w-md truncate text-4xl font-black tracking-tight">{title}</h1>
-              </div>
-              {view === 'podcast-episodes' && (
-                <span className="shrink-0 text-base text-slate-400">Zurück-Taste: Sendungen</span>
-              )}
+            <div className="min-w-0">
+              <p className="text-base font-semibold uppercase tracking-[0.35em] text-purple-400">Web Radio</p>
+              <h1 className="mt-1 line-clamp-2 text-4xl font-black leading-tight tracking-tight">{title}</h1>
             </div>
-            <div className="mt-5 flex items-center justify-between gap-5">
-              <div className="flex rounded-2xl border border-slate-600 bg-slate-900 p-1.5 shadow-lg">
+            <div className="mt-5 flex items-stretch gap-3">
+              <div className="flex min-w-[19rem] rounded-2xl border-2 border-slate-500 bg-slate-800 p-1.5 shadow-lg shadow-black/30">
                 {modeButtons.map((button) => (
                   <button
                     key={button.focus}
@@ -1272,12 +1351,12 @@ function App() {
                     tabIndex={-1}
                     disabled={isLoading}
                     onClick={button.action}
-                    className={`min-w-36 rounded-xl px-6 py-3 text-lg font-black transition-all ${
+                    className={`min-w-0 flex-1 whitespace-nowrap rounded-xl border px-5 py-3 text-lg font-black transition-colors ${
                       activeIndex === button.focus
-                        ? 'scale-105 bg-purple-500 text-white ring-4 ring-purple-300'
+                        ? 'border-purple-200 bg-purple-500 text-white ring-4 ring-purple-300'
                         : button.active
-                          ? 'bg-purple-700 text-white'
-                          : 'text-slate-400'
+                          ? 'border-purple-500 bg-purple-700 text-white'
+                          : 'border-transparent bg-slate-900 text-slate-200'
                     }`}
                   >
                     {button.label}
@@ -1285,7 +1364,7 @@ function App() {
                 ))}
               </div>
 
-              <div className="flex gap-2">
+              <div className="grid min-w-0 flex-1 grid-cols-5 gap-1.5">
               {actionButtons.map((button) => (
                 <button
                   key={button.focus}
@@ -1293,15 +1372,30 @@ function App() {
                   tabIndex={-1}
                   disabled={isLoading}
                   onClick={button.action}
-                  className={`rounded-xl border px-3.5 py-3 text-base font-bold transition-all ${
+                  className={`min-w-0 overflow-hidden whitespace-nowrap rounded-xl border-2 px-2 py-3 text-sm font-bold shadow-md shadow-black/20 transition-colors ${
+                    button.focus === FAVORITES_FOCUS ? 'col-span-2' : 'col-span-1'
+                  } ${
                     activeIndex === button.focus
-                      ? 'scale-105 border-purple-300 bg-purple-600 ring-4 ring-purple-400'
+                      ? 'border-purple-200 bg-purple-500 text-white ring-4 ring-purple-300'
                       : button.active
-                        ? 'border-purple-500 bg-purple-950 text-purple-200'
-                        : 'border-slate-600 bg-slate-800 text-slate-200'
+                        ? 'border-purple-400 bg-purple-800 text-white'
+                        : 'border-slate-500 bg-slate-800 text-white'
                   }`}
                 >
-                  {button.label}
+                  {button.focus === SEARCH_FOCUS ? (
+                    <svg
+                      aria-hidden="true"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                      className="mx-auto h-6 w-6"
+                    >
+                      <circle cx="11" cy="11" r="7" />
+                      <path d="m20 20-4-4" />
+                    </svg>
+                  ) : button.label}
+                  {button.focus === SEARCH_FOCUS && <span className="sr-only">Suche</span>}
                 </button>
               ))}
               </div>
@@ -1356,7 +1450,7 @@ function App() {
                     <h2 className="line-clamp-2 text-xl font-bold leading-tight">{item.name}</h2>
                     <p className="mt-2 line-clamp-2 text-base text-slate-300">{item.genre}</p>
                   </div>
-                  {(favoriteIds.has(item.id) || subscriptionIds.has(item.id)) && <span className="absolute right-3 top-2 text-2xl text-amber-300">★</span>}
+                  {(isFavoriteEntry(item) || subscriptionIds.has(item.id)) && <span className="absolute right-3 top-2 text-2xl text-amber-300">★</span>}
                   {newEpisodeIdSet.has(item.id) && (
                     <span className="absolute left-3 top-2 rounded-lg bg-fuchsia-500 px-2 py-1 text-xs font-black uppercase text-white">
                       Neu
@@ -1534,6 +1628,50 @@ function App() {
           )}
         </section>
       </div>
+
+      {favoriteRemovalTarget && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/90 px-24">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="favorite-removal-title"
+            className="w-full max-w-3xl rounded-[2.5rem] border-2 border-purple-400 bg-slate-900 p-10 text-center shadow-2xl ring-4 ring-purple-500/30"
+          >
+            <p className="text-lg font-bold uppercase tracking-[0.25em] text-purple-400">Favorit entfernen</p>
+            <h2 id="favorite-removal-title" className="mt-5 line-clamp-2 text-4xl font-black leading-tight">
+              „{favoriteRemovalTarget.name}“ wirklich entfernen?
+            </h2>
+            <div className="mt-10 grid grid-cols-2 gap-5">
+              <button
+                type="button"
+                onClick={() => {
+                  setFavoriteRemovalTarget(null)
+                  setFavoriteRemovalAction('cancel')
+                }}
+                className={`rounded-2xl border-2 px-8 py-5 text-2xl font-black ${
+                  favoriteRemovalAction === 'cancel'
+                    ? 'border-purple-200 bg-purple-600 text-white ring-4 ring-purple-300'
+                    : 'border-slate-500 bg-slate-800 text-slate-200'
+                }`}
+              >
+                Abbrechen
+              </button>
+              <button
+                type="button"
+                onClick={() => removeFavorite(favoriteRemovalTarget)}
+                className={`rounded-2xl border-2 px-8 py-5 text-2xl font-black ${
+                  favoriteRemovalAction === 'remove'
+                    ? 'border-rose-200 bg-rose-600 text-white ring-4 ring-rose-300'
+                    : 'border-rose-700 bg-rose-950 text-rose-200'
+                }`}
+              >
+                Entfernen
+              </button>
+            </div>
+            <p className="mt-7 text-lg text-slate-300">←/→ auswählen · OK bestätigen · Zurück abbrechen</p>
+          </div>
+        </div>
+      )}
 
       {isSearchOpen && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/90 px-24">
