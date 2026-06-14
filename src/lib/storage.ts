@@ -32,7 +32,10 @@ export function readStoredJson<T>(key: string, fallback: T): T {
 }
 
 export function readStoredVolume() {
-  const storedVolume = Number(localStorage.getItem(storageKeys.volume))
+  const storedValue = localStorage.getItem(storageKeys.volume)
+  if (storedValue === null) return 1
+
+  const storedVolume = Number(storedValue)
   return Number.isFinite(storedVolume) && storedVolume >= 0 && storedVolume <= 1
     ? storedVolume
     : 1
