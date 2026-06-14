@@ -3,6 +3,7 @@ import type { EpisodeFilter, NavigationState, View } from '../types'
 export const storageKeys = {
   favorites: 'webos-radio-favorites',
   volume: 'webos-radio-volume',
+  volumeMigration: 'webos-radio-volume-migration-v1',
   listenedEpisodes: 'webos-radio-listened-episodes',
   podcastPositions: 'webos-radio-podcast-positions',
   podcastSubscriptions: 'webos-radio-podcast-subscriptions',
@@ -33,6 +34,15 @@ export function readStoredJson<T>(key: string, fallback: T): T {
 
 export function readStoredVolume() {
   const storedValue = localStorage.getItem(storageKeys.volume)
+  const migrationCompleted = localStorage.getItem(storageKeys.volumeMigration) === 'done'
+
+  // Earlier versions converted a missing value to 0 and persisted it. Reset that
+  // accidental value once, while preserving deliberate volume changes afterwards.
+  if (!migrationCompleted) {
+    localStorage.setItem(storageKeys.volumeMigration, 'done')
+    if (storedValue === null || storedValue === '0') return 1
+  }
+
   if (storedValue === null) return 1
 
   const storedVolume = Number(storedValue)
