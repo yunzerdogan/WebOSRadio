@@ -1,11 +1,30 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
+import { StationLogo } from './components/StationLogo'
+import { defaultStations } from './data/defaultStations'
+import {
+  favoritesFirst,
+  filterEpisodes,
+  formatCountdown,
+  formatTime,
+  getMetadataUrl,
+  getPlayableMediaUrl,
+  isSameMedia,
+  prependPreferred,
+} from './lib/media'
+import {
+  loadNavigationState,
+  readStoredJson,
+  readStoredVolume,
+  storageKeys,
+} from './lib/storage'
+import { getPodcastEpisodes, searchPodcastShows, searchRadioStations } from './services/catalog'
 import type {
-  PodcastEpisode,
-  PodcastShow,
-  RadioBrowserStation,
+  EpisodeFilter,
+  NavigationState,
   RadioStation,
   StreamMetadata,
+  View,
 } from './types'
 
 const PAGE_SIZE = 6
@@ -39,268 +58,15 @@ const HEADER_FOCUSES = [
   SEARCH_FOCUS,
   STAR_FOCUS,
 ]
-const RADIO_BROWSER_API = 'https://de1.api.radio-browser.info/json/stations/search'
-const PODCAST_API = 'https://itunes.apple.com'
-const FAVORITES_KEY = 'webos-radio-favorites'
-const VOLUME_KEY = 'webos-radio-volume'
-const LISTENED_EPISODES_KEY = 'webos-radio-listened-episodes'
-const PODCAST_POSITIONS_KEY = 'webos-radio-podcast-positions'
-const PODCAST_SUBSCRIPTIONS_KEY = 'webos-radio-podcast-subscriptions'
-const KNOWN_EPISODES_KEY = 'webos-radio-known-episodes'
-const HISTORY_KEY = 'webos-radio-history'
-const NAVIGATION_STATE_KEY = 'webos-radio-navigation-state'
-
-type View = 'radio' | 'favorites' | 'subscriptions' | 'history' | 'podcast-shows' | 'podcast-episodes' | 'local'
-type EpisodeFilter = 'newest' | 'oldest' | 'unheard' | 'heard'
-
-interface NavigationState {
-  items: RadioStation[]
-  view: View
-  activeIndex: number
-  lastListIndex: number
-  playerReturnFocus: number
-  podcastShows: RadioStation[]
-  podcastEpisodes: RadioStation[]
-  selectedPodcast: RadioStation | null
-  currentStation: RadioStation | null
-  episodeFilter: EpisodeFilter
-}
-
 const PLAYBACK_SPEEDS = [0.75, 1, 1.25, 1.5, 2]
 const CUSTOM_SLEEP_OPTION = -1
 const SLEEP_OPTIONS = [0, 1, 15, 30, 60, 90, CUSTOM_SLEEP_OPTION]
-
-const views: View[] = ['radio', 'favorites', 'subscriptions', 'history', 'podcast-shows', 'podcast-episodes', 'local']
-const episodeFilters: EpisodeFilter[] = ['newest', 'oldest', 'unheard', 'heard']
-
-function loadNavigationState(): NavigationState | null {
-  try {
-    const stored = JSON.parse(localStorage.getItem(NAVIGATION_STATE_KEY) ?? 'null') as Partial<NavigationState> | null
-    if (!stored || !views.includes(stored.view as View) || !Array.isArray(stored.items)) return null
-    return {
-      items: stored.items,
-      view: stored.view as View,
-      activeIndex: typeof stored.activeIndex === 'number' ? stored.activeIndex : 0,
-      lastListIndex: typeof stored.lastListIndex === 'number' ? stored.lastListIndex : 0,
-      playerReturnFocus: typeof stored.playerReturnFocus === 'number' ? stored.playerReturnFocus : 0,
-      podcastShows: Array.isArray(stored.podcastShows) ? stored.podcastShows : [],
-      podcastEpisodes: Array.isArray(stored.podcastEpisodes) ? stored.podcastEpisodes : [],
-      selectedPodcast: stored.selectedPodcast ?? null,
-      currentStation: stored.currentStation ?? null,
-      episodeFilter: episodeFilters.includes(stored.episodeFilter as EpisodeFilter)
-        ? stored.episodeFilter as EpisodeFilter
-        : 'newest',
-    }
-  } catch {
-    return null
-  }
-}
 
 const mediaErrorMessages: Record<number, string> = {
   1: 'Die Wiedergabe wurde abgebrochen.',
   2: 'Netzwerkfehler beim Laden des Streams.',
   3: 'Das Audioformat konnte nicht dekodiert werden.',
   4: 'Stream oder Audioformat wird nicht unterstützt.',
-}
-
-const defaultStations: RadioStation[] = [
-  {
-    id: 'groove-salad',
-    name: 'SomaFM Groove Salad',
-    genre: 'Ambient / Downtempo',
-    streamUrl: 'https://ice2.somafm.com/groovesalad-128-mp3',
-    logoUrl: 'https://somafm.com/img3/groovesalad-400.jpg',
-    mediaType: 'radio',
-  },
-  {
-    id: 'secret-agent',
-    name: 'SomaFM Secret Agent',
-    genre: 'Spy Jazz / Lounge',
-    streamUrl: 'https://ice2.somafm.com/secretagent-128-mp3',
-    logoUrl: 'https://somafm.com/img3/secretagent-400.jpg',
-    mediaType: 'radio',
-  },
-  {
-    id: 'drone-zone',
-    name: 'SomaFM Drone Zone',
-    genre: 'Atmospheric Ambient',
-    streamUrl: 'https://ice2.somafm.com/dronezone-128-mp3',
-    logoUrl: 'https://somafm.com/img3/dronezone-400.jpg',
-    mediaType: 'radio',
-  },
-  {
-    id: 'def-con',
-    name: 'SomaFM DEF CON Radio',
-    genre: 'Electronica / Hacker Culture',
-    streamUrl: 'https://ice2.somafm.com/defcon-128-mp3',
-    logoUrl: 'https://somafm.com/img3/defcon-400.jpg',
-    mediaType: 'radio',
-  },
-  {
-    id: 'illinois-street-lounge',
-    name: 'SomaFM Illinois Street Lounge',
-    genre: 'Classic Lounge',
-    streamUrl: 'https://ice2.somafm.com/illstreet-128-mp3',
-    logoUrl: 'https://somafm.com/img3/illstreet-400.jpg',
-    mediaType: 'radio',
-  },
-  {
-    id: 'indie-pop-rocks',
-    name: 'SomaFM Indie Pop Rocks!',
-    genre: 'Indie Pop / Rock',
-    streamUrl: 'https://ice2.somafm.com/indiepop-128-mp3',
-    logoUrl: 'https://somafm.com/img3/indiepop-400.jpg',
-    mediaType: 'radio',
-  },
-]
-
-function requestPodcastJsonp<T>(path: 'search' | 'lookup', params: Record<string, string>) {
-  return new Promise<T[]>((resolve, reject) => {
-    const callbackName = `podcastJsonp_${Date.now()}_${Math.floor(Math.random() * 10000)}`
-    const script = document.createElement('script')
-    const callbacks = window as unknown as Record<string, ((data: { results?: T[] }) => void) | undefined>
-    const timeout = window.setTimeout(
-      () => finish(new Error('Podcast-Anfrage hat zu lange gedauert.')),
-      15000,
-    )
-
-    const finish = (error?: Error, results: T[] = []) => {
-      window.clearTimeout(timeout)
-      script.remove()
-      delete callbacks[callbackName]
-      if (error) reject(error)
-      else resolve(results)
-    }
-
-    callbacks[callbackName] = (data) => finish(undefined, data.results ?? [])
-    script.onerror = () => finish(new Error('Podcast-Verzeichnis ist nicht erreichbar.'))
-    const query = new URLSearchParams({ ...params, callback: callbackName })
-    script.src = `${PODCAST_API}/${path}?${query}`
-    document.head.appendChild(script)
-  })
-}
-
-function normalizeMediaUrl(url: string) {
-  return url.trim().replace(/&amp;/gi, '&')
-}
-
-function isCompatibleMediaUrl(url: string) {
-  return /^https:\/\//i.test(url)
-}
-
-function formatTime(seconds: number) {
-  if (!Number.isFinite(seconds) || seconds < 0) return '0:00'
-  const hours = Math.floor(seconds / 3600)
-  const minutes = Math.floor((seconds % 3600) / 60)
-  const remainingSeconds = Math.floor(seconds % 60)
-  return hours > 0
-    ? `${hours}:${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`
-    : `${minutes}:${String(remainingSeconds).padStart(2, '0')}`
-}
-
-function formatCountdown(seconds: number) {
-  const safeSeconds = Math.max(0, Math.floor(seconds))
-  const hours = Math.floor(safeSeconds / 3600)
-  const minutes = Math.floor((safeSeconds % 3600) / 60)
-  const remainingSeconds = safeSeconds % 60
-  return [hours, minutes, remainingSeconds]
-    .map((part) => String(part).padStart(2, '0'))
-    .join(':')
-}
-
-function filterEpisodes(
-  episodes: RadioStation[],
-  filter: EpisodeFilter,
-  listenedEpisodeIds: Set<string>,
-) {
-  const filtered = filter === 'heard'
-    ? episodes.filter((episode) => listenedEpisodeIds.has(episode.id))
-    : filter === 'unheard'
-      ? episodes.filter((episode) => !listenedEpisodeIds.has(episode.id))
-      : [...episodes]
-
-  return filtered.sort((first, second) => {
-    const firstDate = new Date(first.releaseDate ?? 0).getTime()
-    const secondDate = new Date(second.releaseDate ?? 0).getTime()
-    return filter === 'oldest' ? firstDate - secondDate : secondDate - firstDate
-  })
-}
-
-function favoritesFirst(entries: RadioStation[], favoriteIds: Set<string>) {
-  return [
-    ...entries.filter((entry) => favoriteIds.has(entry.id)),
-    ...entries.filter((entry) => !favoriteIds.has(entry.id)),
-  ]
-}
-
-function isSameMedia(first: RadioStation, second: RadioStation) {
-  if (first.id === second.id) return true
-  return Boolean(first.streamUrl && second.streamUrl
-    && normalizeMediaUrl(first.streamUrl) === normalizeMediaUrl(second.streamUrl))
-}
-
-function prependPreferred(entries: RadioStation[], preferredEntries: RadioStation[]) {
-  return [
-    ...preferredEntries,
-    ...entries.filter((entry) => !preferredEntries.some((preferred) => isSameMedia(entry, preferred))),
-  ]
-}
-
-function getPlayableMediaUrl(url: string) {
-  const normalizedUrl = normalizeMediaUrl(url)
-  if (!/^https?:\/\//i.test(normalizedUrl)) return normalizedUrl
-  const configuredProxy = import.meta.env.VITE_MEDIA_PROXY_URL as string | undefined
-  const sameOriginProxyDisabled = import.meta.env.VITE_DISABLE_SAME_ORIGIN_PROXY === 'true'
-  const sameOriginProxy = !sameOriginProxyDisabled
-    && (window.location.protocol === 'http:' || window.location.protocol === 'https:')
-  const proxyBase = configuredProxy || (sameOriginProxy ? '/media-proxy' : '')
-  return proxyBase
-    ? `${proxyBase}?url=${encodeURIComponent(normalizedUrl)}`
-    : normalizedUrl
-}
-
-function getMetadataUrl(url: string) {
-  const normalizedUrl = normalizeMediaUrl(url)
-  const configuredProxy = import.meta.env.VITE_METADATA_PROXY_URL as string | undefined
-  const sameOriginProxyDisabled = import.meta.env.VITE_DISABLE_SAME_ORIGIN_PROXY === 'true'
-  const sameOriginProxy = !sameOriginProxyDisabled
-    && (window.location.protocol === 'http:' || window.location.protocol === 'https:')
-  const proxyBase = configuredProxy || (sameOriginProxy ? '/media-metadata' : '')
-  return proxyBase ? `${proxyBase}?url=${encodeURIComponent(normalizedUrl)}` : ''
-}
-
-function StationLogo({
-  station,
-  large = false,
-  compact = false,
-}: {
-  station: RadioStation
-  large?: boolean
-  compact?: boolean
-}) {
-  const [imageFailed, setImageFailed] = useState(false)
-  const sizeClasses = large
-    ? compact
-      ? 'h-[clamp(8rem,18vh,13rem)] w-[clamp(8rem,18vh,13rem)] rounded-[1.5rem] text-6xl'
-      : 'h-[clamp(13rem,34vh,22rem)] w-[clamp(13rem,34vh,22rem)] rounded-[2rem] text-8xl'
-    : 'h-24 w-24 rounded-2xl text-3xl'
-
-  if (!station.logoUrl || imageFailed) {
-    return (
-      <div className={`${sizeClasses} flex shrink-0 items-center justify-center bg-gradient-to-br from-purple-600 to-indigo-900 font-black shadow-lg`}>
-        {station.name.slice(0, 1).toUpperCase()}
-      </div>
-    )
-  }
-
-  return (
-    <img
-      src={station.logoUrl}
-      alt={large ? `${station.name} Logo` : ''}
-      onError={() => setImageFailed(true)}
-      className={`${sizeClasses} shrink-0 bg-slate-700 object-cover shadow-lg`}
-    />
-  )
 }
 
 function App() {
@@ -318,61 +84,32 @@ function App() {
   const [podcastShows, setPodcastShows] = useState<RadioStation[]>(initialNavigationState?.podcastShows ?? [])
   const [podcastEpisodes, setPodcastEpisodes] = useState<RadioStation[]>(initialNavigationState?.podcastEpisodes ?? [])
   const [episodeFilter, setEpisodeFilter] = useState<EpisodeFilter>(initialNavigationState?.episodeFilter ?? 'newest')
-  const [listenedEpisodes, setListenedEpisodes] = useState<string[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem(LISTENED_EPISODES_KEY) ?? '[]') as string[]
-    } catch {
-      return []
-    }
-  })
-  const [podcastPositions, setPodcastPositions] = useState<Record<string, number>>(() => {
-    try {
-      return JSON.parse(localStorage.getItem(PODCAST_POSITIONS_KEY) ?? '{}') as Record<string, number>
-    } catch {
-      return {}
-    }
-  })
-  const [subscriptions, setSubscriptions] = useState<RadioStation[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem(PODCAST_SUBSCRIPTIONS_KEY) ?? '[]') as RadioStation[]
-    } catch {
-      return []
-    }
-  })
-  const [knownEpisodes, setKnownEpisodes] = useState<Record<string, string[]>>(() => {
-    try {
-      return JSON.parse(localStorage.getItem(KNOWN_EPISODES_KEY) ?? '{}') as Record<string, string[]>
-    } catch {
-      return {}
-    }
-  })
+  const [listenedEpisodes, setListenedEpisodes] = useState<string[]>(
+    () => readStoredJson(storageKeys.listenedEpisodes, []),
+  )
+  const [podcastPositions, setPodcastPositions] = useState<Record<string, number>>(
+    () => readStoredJson(storageKeys.podcastPositions, {}),
+  )
+  const [subscriptions, setSubscriptions] = useState<RadioStation[]>(
+    () => readStoredJson(storageKeys.podcastSubscriptions, []),
+  )
+  const [knownEpisodes, setKnownEpisodes] = useState<Record<string, string[]>>(
+    () => readStoredJson(storageKeys.knownEpisodes, {}),
+  )
   const [newEpisodeIds, setNewEpisodeIds] = useState<string[]>([])
-  const [history, setHistory] = useState<RadioStation[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem(HISTORY_KEY) ?? '[]') as RadioStation[]
-    } catch {
-      return []
-    }
-  })
+  const [history, setHistory] = useState<RadioStation[]>(
+    () => readStoredJson(storageKeys.history, []),
+  )
   const [view, setView] = useState<View>(initialNavigationState?.view ?? 'local')
   const [activeIndex, setActiveIndex] = useState(initialNavigationState?.activeIndex ?? 0)
   const [playerReturnFocus, setPlayerReturnFocus] = useState(initialNavigationState?.playerReturnFocus ?? 0)
   const [currentStation, setCurrentStation] = useState<RadioStation | null>(initialNavigationState?.currentStation ?? null)
   const [selectedPodcast, setSelectedPodcast] = useState<RadioStation | null>(initialNavigationState?.selectedPodcast ?? null)
-  const [favorites, setFavorites] = useState<RadioStation[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem(FAVORITES_KEY) ?? '[]') as RadioStation[]
-    } catch {
-      return []
-    }
-  })
+  const [favorites, setFavorites] = useState<RadioStation[]>(
+    () => readStoredJson(storageKeys.favorites, []),
+  )
   const [isPlaying, setIsPlaying] = useState(false)
-  const [volume, setVolume] = useState(() => {
-    const storedVolume = Number(localStorage.getItem(VOLUME_KEY))
-    return Number.isFinite(storedVolume) && storedVolume >= 0 && storedVolume <= 1
-      ? storedVolume
-      : 1
-  })
+  const [volume, setVolume] = useState(readStoredVolume)
   const [isMuted, setIsMuted] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
@@ -444,32 +181,32 @@ function App() {
     : false
 
   useEffect(() => {
-    localStorage.setItem(FAVORITES_KEY, JSON.stringify(favorites))
+    localStorage.setItem(storageKeys.favorites, JSON.stringify(favorites))
   }, [favorites])
 
   useEffect(() => {
-    localStorage.setItem(VOLUME_KEY, String(volume))
+    localStorage.setItem(storageKeys.volume, String(volume))
     if (audioRef.current) audioRef.current.volume = volume
   }, [volume])
 
   useEffect(() => {
-    localStorage.setItem(LISTENED_EPISODES_KEY, JSON.stringify(listenedEpisodes))
+    localStorage.setItem(storageKeys.listenedEpisodes, JSON.stringify(listenedEpisodes))
   }, [listenedEpisodes])
 
   useEffect(() => {
-    localStorage.setItem(PODCAST_POSITIONS_KEY, JSON.stringify(podcastPositions))
+    localStorage.setItem(storageKeys.podcastPositions, JSON.stringify(podcastPositions))
   }, [podcastPositions])
 
   useEffect(() => {
-    localStorage.setItem(PODCAST_SUBSCRIPTIONS_KEY, JSON.stringify(subscriptions))
+    localStorage.setItem(storageKeys.podcastSubscriptions, JSON.stringify(subscriptions))
   }, [subscriptions])
 
   useEffect(() => {
-    localStorage.setItem(KNOWN_EPISODES_KEY, JSON.stringify(knownEpisodes))
+    localStorage.setItem(storageKeys.knownEpisodes, JSON.stringify(knownEpisodes))
   }, [knownEpisodes])
 
   useEffect(() => {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(history))
+    localStorage.setItem(storageKeys.history, JSON.stringify(history))
   }, [history])
 
   useEffect(() => {
@@ -485,7 +222,7 @@ function App() {
       currentStation,
       episodeFilter,
     }
-    localStorage.setItem(NAVIGATION_STATE_KEY, JSON.stringify(navigationState))
+    localStorage.setItem(storageKeys.navigationState, JSON.stringify(navigationState))
   }, [
     activeIndex,
     currentStation,
@@ -822,35 +559,7 @@ function App() {
     setIsLoading(true)
     setStatusMessage(name ? `Suche nach „${name}“ ...` : 'Öffentliche Radios werden geladen ...')
     try {
-      const params = new URLSearchParams({
-        countrycode: 'DE',
-        hidebroken: 'true',
-        order: 'clickcount',
-        reverse: 'true',
-        limit: '120',
-      })
-      if (name) params.set('name', name)
-      const response = await fetch(`${RADIO_BROWSER_API}?${params}`)
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const results = (await response.json()) as RadioBrowserStation[]
-      const stations = results
-        .filter((station) => {
-          const codec = station.codec.toUpperCase()
-          return station.name
-            && isCompatibleMediaUrl(station.url_resolved)
-            && !station.hls
-            && ['MP3', 'AAC', 'AAC+'].includes(codec)
-        })
-        .map<RadioStation>((station) => ({
-          id: `radio-${station.stationuuid}`,
-          name: station.name.trim(),
-          genre: [station.tags.split(',')[0], station.codec, station.bitrate ? `${station.bitrate} kbit/s` : '']
-            .filter(Boolean)
-            .join(' · '),
-          streamUrl: normalizeMediaUrl(station.url_resolved),
-          logoUrl: station.favicon,
-          mediaType: 'radio',
-        }))
+      const stations = await searchRadioStations(name)
       if (!stations.length) throw new Error('Keine Sender gefunden')
       showItems(stations, 'radio', `${stations.length} Radios ${name ? 'gefunden' : 'geladen'}.`)
     } catch (error) {
@@ -864,24 +573,7 @@ function App() {
     setIsLoading(true)
     setStatusMessage(`Podcast-Suche nach „${term}“ ...`)
     try {
-      const results = await requestPodcastJsonp<PodcastShow>('search', {
-        term,
-        country: 'DE',
-        media: 'podcast',
-        entity: 'podcast',
-        limit: '60',
-      })
-      const shows = results
-        .filter((show) => show.collectionId && show.collectionName)
-        .map<RadioStation>((show) => ({
-          id: `podcast-show-${show.collectionId}`,
-          name: show.collectionName,
-          genre: `${show.artistName || 'Podcast'}${show.trackCount ? ` · ${show.trackCount} Folgen` : ''}`,
-          streamUrl: '',
-          logoUrl: show.artworkUrl600 || show.artworkUrl100 || '',
-          mediaType: 'podcast-show',
-          collectionId: show.collectionId,
-        }))
+      const shows = await searchPodcastShows(term)
       if (!shows.length) throw new Error('Keine Podcasts gefunden')
       setSelectedPodcast(null)
       setPodcastShows(shows)
@@ -898,26 +590,7 @@ function App() {
     setIsLoading(true)
     setStatusMessage(`Folgen von „${show.name}“ werden geladen ...`)
     try {
-      const results = await requestPodcastJsonp<PodcastEpisode>('lookup', {
-        id: String(show.collectionId),
-        entity: 'podcastEpisode',
-        limit: '100',
-        country: 'DE',
-      })
-      const episodes = results
-        .filter((episode) => episode.trackName
-          && isCompatibleMediaUrl(episode.episodeUrl)
-          && (!episode.episodeContentType || episode.episodeContentType === 'audio'))
-        .map<RadioStation>((episode) => ({
-          id: `podcast-${episode.trackId}`,
-          name: episode.trackName,
-          genre: `${new Date(episode.releaseDate).toLocaleDateString('de-DE')} · ${episode.collectionName}`,
-          streamUrl: normalizeMediaUrl(episode.episodeUrl),
-          logoUrl: episode.artworkUrl600 || episode.artworkUrl160 || show.logoUrl,
-          mediaType: 'podcast',
-          collectionId: show.collectionId,
-          releaseDate: episode.releaseDate,
-        }))
+      const episodes = await getPodcastEpisodes(show)
       if (!episodes.length) throw new Error('Keine abspielbaren Folgen gefunden')
       const knownForShow = knownEpisodes[String(show.collectionId)] ?? []
       const isSubscribed = subscriptionIds.has(show.id)

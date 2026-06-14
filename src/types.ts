@@ -47,3 +47,27 @@ export interface PodcastShow {
   primaryGenreName?: string
   trackCount?: number
 }
+
+export type View =
+  | 'radio'
+  | 'favorites'
+  | 'subscriptions'
+  | 'history'
+  | 'podcast-shows'
+  | 'podcast-episodes'
+  | 'local'
+
+export type EpisodeFilter = 'newest' | 'oldest' | 'unheard' | 'heard'
+
+export interface NavigationState {
+  items: RadioStation[]
+  view: View
+  activeIndex: number
+  lastListIndex: number
+  playerReturnFocus: number
+  podcastShows: RadioStation[]
+  podcastEpisodes: RadioStation[]
+  selectedPodcast: RadioStation | null
+  currentStation: RadioStation | null
+  episodeFilter: EpisodeFilter
+}

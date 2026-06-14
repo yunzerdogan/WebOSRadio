@@ -1,5 +1,15 @@
 # WebOS Radio
 
+## Projektstruktur
+
+- `src/App.tsx`: Anwendungszustand, Player-Abläufe und TV-Navigation
+- `src/components/`: wiederverwendbare React-Komponenten
+- `src/services/`: Zugriffe auf Radio- und Podcast-Verzeichnisse
+- `src/lib/`: zustandslose Medien- und Speicher-Hilfsfunktionen
+- `src/data/`: statische Standarddaten
+- `server/`: statischer Webserver und abgesicherter Medien-Proxy
+- `src/types.ts`: gemeinsam verwendete Datenmodelle
+
 ## Entwicklung
 
 ```bash
