@@ -70,3 +70,20 @@ npm start
 Für einen öffentlich erreichbaren Proxy sollten `PROXY_ALLOW_ORIGIN` und
 `ALLOWED_MEDIA_HOSTS` gesetzt werden. Private und lokale Zieladressen blockiert
 der Server grundsätzlich.
+
+## GitHub Pages
+
+Der Workflow `.github/workflows/pages.yml` baut die App bei Pull Requests und
+veröffentlicht jeden Push auf `main` automatisch über GitHub Pages.
+
+Einmalig im Repository unter **Settings > Pages > Build and deployment** als
+Quelle **GitHub Actions** auswählen. Die veröffentlichte App ist anschließend
+unter `https://yunzerdogan.github.io/WebOSRadio/` erreichbar.
+
+GitHub Pages kann den Node-Proxy aus `server/` nicht ausführen. Ohne weitere
+Konfiguration greift der Pages-Build deshalb direkt auf HTTPS-Streams zu. Für
+zuverlässigere Wiedergabe und Metadaten können unter **Settings > Secrets and
+variables > Actions > Variables** diese Repository-Variablen gesetzt werden:
+
+- `MEDIA_PROXY_URL`, zum Beispiel `https://proxy.example.com/media-proxy`
+- `METADATA_PROXY_URL`, zum Beispiel `https://proxy.example.com/media-metadata`

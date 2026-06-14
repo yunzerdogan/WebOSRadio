@@ -250,7 +250,9 @@ function getPlayableMediaUrl(url: string) {
   const normalizedUrl = normalizeMediaUrl(url)
   if (!/^https?:\/\//i.test(normalizedUrl)) return normalizedUrl
   const configuredProxy = import.meta.env.VITE_MEDIA_PROXY_URL as string | undefined
-  const sameOriginProxy = window.location.protocol === 'http:' || window.location.protocol === 'https:'
+  const sameOriginProxyDisabled = import.meta.env.VITE_DISABLE_SAME_ORIGIN_PROXY === 'true'
+  const sameOriginProxy = !sameOriginProxyDisabled
+    && (window.location.protocol === 'http:' || window.location.protocol === 'https:')
   const proxyBase = configuredProxy || (sameOriginProxy ? '/media-proxy' : '')
   return proxyBase
     ? `${proxyBase}?url=${encodeURIComponent(normalizedUrl)}`
@@ -260,7 +262,9 @@ function getPlayableMediaUrl(url: string) {
 function getMetadataUrl(url: string) {
   const normalizedUrl = normalizeMediaUrl(url)
   const configuredProxy = import.meta.env.VITE_METADATA_PROXY_URL as string | undefined
-  const sameOriginProxy = window.location.protocol === 'http:' || window.location.protocol === 'https:'
+  const sameOriginProxyDisabled = import.meta.env.VITE_DISABLE_SAME_ORIGIN_PROXY === 'true'
+  const sameOriginProxy = !sameOriginProxyDisabled
+    && (window.location.protocol === 'http:' || window.location.protocol === 'https:')
   const proxyBase = configuredProxy || (sameOriginProxy ? '/media-metadata' : '')
   return proxyBase ? `${proxyBase}?url=${encodeURIComponent(normalizedUrl)}` : ''
 }
