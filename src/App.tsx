@@ -67,7 +67,8 @@ interface NavigationState {
 }
 
 const PLAYBACK_SPEEDS = [0.75, 1, 1.25, 1.5, 2]
-const SLEEP_OPTIONS = [0, 15, 30, 60, 90]
+const CUSTOM_SLEEP_OPTION = -1
+const SLEEP_OPTIONS = [0, 1, 15, 30, 60, 90, CUSTOM_SLEEP_OPTION]
 
 const views: View[] = ['radio', 'favorites', 'subscriptions', 'history', 'podcast-shows', 'podcast-episodes', 'local']
 const episodeFilters: EpisodeFilter[] = ['newest', 'oldest', 'unheard', 'heard']
@@ -197,6 +198,16 @@ function formatTime(seconds: number) {
     : `${minutes}:${String(remainingSeconds).padStart(2, '0')}`
 }
 
+function formatCountdown(seconds: number) {
+  const safeSeconds = Math.max(0, Math.floor(seconds))
+  const hours = Math.floor(safeSeconds / 3600)
+  const minutes = Math.floor((safeSeconds % 3600) / 60)
+  const remainingSeconds = safeSeconds % 60
+  return [hours, minutes, remainingSeconds]
+    .map((part) => String(part).padStart(2, '0'))
+    .join(':')
+}
+
 function filterEpisodes(
   episodes: RadioStation[],
   filter: EpisodeFilter,
@@ -292,6 +303,7 @@ function App() {
   const [initialNavigationState] = useState(loadNavigationState)
   const audioRef = useRef<HTMLAudioElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const customSleepInputRef = useRef<HTMLInputElement>(null)
   const pendingResumeRef = useRef(0)
   const lastPositionSaveRef = useRef(0)
   const retryCountRef = useRef(0)
@@ -372,6 +384,9 @@ function App() {
   const [sleepMinutes, setSleepMinutes] = useState(0)
   const [sleepEndsAt, setSleepEndsAt] = useState<number | null>(null)
   const [sleepRemaining, setSleepRemaining] = useState(0)
+  const [isCustomSleepOpen, setIsCustomSleepOpen] = useState(false)
+  const [customSleepMinutes, setCustomSleepMinutes] = useState('')
+  const [customSleepError, setCustomSleepError] = useState('')
   const [streamMetadata, setStreamMetadata] = useState<StreamMetadata>({ title: '', station: '' })
 
   const favoriteIds = useMemo(() => new Set(favorites.map((favorite) => favorite.id)), [favorites])
@@ -498,6 +513,10 @@ function App() {
     if (isSearchOpen) window.setTimeout(() => searchInputRef.current?.focus(), 50)
   }, [isSearchOpen])
 
+  useEffect(() => {
+    if (isCustomSleepOpen) window.setTimeout(() => customSleepInputRef.current?.focus(), 50)
+  }, [isCustomSleepOpen])
+
   const playStation = useCallback((station: RadioStation) => {
     const audio = audioRef.current
     if (!audio || !station.streamUrl) return
@@ -617,6 +636,12 @@ function App() {
   }, [sleepMinutes])
 
   const activateSleepTimer = useCallback(() => {
+    if (sleepMinutes === CUSTOM_SLEEP_OPTION) {
+      setCustomSleepMinutes('')
+      setCustomSleepError('')
+      setIsCustomSleepOpen(true)
+      return
+    }
     if (sleepMinutes === 0) {
       setSleepEndsAt(null)
       setSleepRemaining(0)
@@ -628,6 +653,22 @@ function App() {
     setSleepRemaining(sleepMinutes * 60)
     setStatusMessage(`Sleep-Timer auf ${sleepMinutes} Minuten gesetzt.`)
   }, [sleepMinutes])
+
+  const submitCustomSleepTimer = useCallback((event?: FormEvent) => {
+    event?.preventDefault()
+    const minutes = Number(customSleepMinutes)
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) {
+      setCustomSleepError('Bitte eine ganze Zahl zwischen 1 und 1440 eingeben.')
+      return
+    }
+    const endsAt = Date.now() + minutes * 60_000
+    setSleepMinutes(minutes)
+    setSleepEndsAt(endsAt)
+    setSleepRemaining(minutes * 60)
+    setStatusMessage(`Sleep-Timer auf ${minutes} Minuten gesetzt.`)
+    setIsCustomSleepOpen(false)
+    setCustomSleepError('')
+  }, [customSleepMinutes])
 
   const toggleListened = useCallback(() => {
     const target = focusedItem?.mediaType === 'podcast'
@@ -697,6 +738,8 @@ function App() {
         userStoppedRef.current = true
         audioRef.current?.pause()
         setSleepEndsAt(null)
+        setSleepMinutes(0)
+        setSleepRemaining(0)
         setPlaybackMessage('Sleep-Timer beendet die Wiedergabe')
       }
     }
@@ -1010,6 +1053,7 @@ function App() {
         }
         return
       }
+      if (isCustomSleepOpen) return
       if (isSearchOpen) return
       const isOkKey = event.key === 'Enter' || event.keyCode === 13
       const isFavoriteKey = event.key.toLowerCase() === 'f' || event.keyCode === 405
@@ -1179,6 +1223,7 @@ function App() {
     favoriteRemovalTarget,
     goBackFromEpisodes,
     isSearchOpen,
+    isCustomSleepOpen,
     orderedItems,
     lastListIndex,
     loadPodcastShows,
@@ -1578,17 +1623,30 @@ function App() {
                 </p>
               </div>
               <div
-                className={`mt-3 flex w-full shrink-0 items-center justify-between rounded-2xl border px-5 py-3 transition-all ${
+                className={`mt-3 flex w-full shrink-0 items-center justify-between gap-5 rounded-2xl border px-5 py-3 transition-all ${
                   activeIndex === SLEEP_FOCUS
                     ? 'border-purple-300 bg-slate-800 ring-4 ring-purple-500'
                     : 'border-slate-700 bg-slate-900/60'
                 }`}
               >
-                <span className="font-bold text-slate-300">Sleep-Timer</span>
-                <span className="text-lg font-black text-purple-300">
-                  {sleepEndsAt ? `${formatTime(sleepRemaining)} übrig` : sleepMinutes ? `${sleepMinutes} Min.` : 'Aus'}
+                <div>
+                  <p className="font-bold text-slate-300">Sleep-Timer</p>
+                  <p className={`text-sm font-semibold ${sleepEndsAt ? 'text-emerald-400' : 'text-slate-500'}`}>
+                    {sleepEndsAt ? 'Läuft' : 'Nicht aktiv'}
+                  </p>
+                </div>
+                <span className={`min-w-36 text-center font-mono text-2xl font-black tabular-nums ${
+                  sleepEndsAt ? 'text-emerald-300' : 'text-purple-300'
+                }`}>
+                  {sleepEndsAt
+                    ? formatCountdown(sleepRemaining)
+                    : sleepMinutes === CUSTOM_SLEEP_OPTION
+                      ? 'Eigene Zeit'
+                      : sleepMinutes
+                        ? `${sleepMinutes} Min.`
+                        : 'Aus'}
                 </span>
-                <span className="text-sm text-slate-400">←/→ wählen · OK setzen</span>
+                <span className="text-right text-sm text-slate-400">←/→ wählen<br />OK setzen</span>
               </div>
               <div className="mt-3 flex h-10 shrink-0 items-end justify-center gap-2">
                 {[48, 62, 54, 64, 45].map((height, index) => (
@@ -1628,6 +1686,45 @@ function App() {
           )}
         </section>
       </div>
+
+      {isCustomSleepOpen && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/90 px-24">
+          <form
+            onSubmit={submitCustomSleepTimer}
+            className="w-full max-w-3xl rounded-[2.5rem] border-2 border-purple-400 bg-slate-900 p-10 text-center shadow-2xl ring-4 ring-purple-500/30"
+          >
+            <p className="text-lg font-bold uppercase tracking-[0.25em] text-purple-400">Eigener Sleep-Timer</p>
+            <h2 className="mt-4 text-4xl font-black">Zeit in Minuten</h2>
+            <input
+              ref={customSleepInputRef}
+              type="number"
+              inputMode="numeric"
+              min="1"
+              max="1440"
+              step="1"
+              value={customSleepMinutes}
+              onChange={(event) => {
+                setCustomSleepMinutes(event.target.value)
+                setCustomSleepError('')
+              }}
+              onKeyDown={(event) => {
+                event.stopPropagation()
+                if (event.key === 'Escape' || event.keyCode === 461) {
+                  setIsCustomSleepOpen(false)
+                  setCustomSleepError('')
+                }
+              }}
+              placeholder="z. B. 45"
+              className="mt-8 w-full rounded-2xl border-4 border-purple-400 bg-slate-800 px-7 py-6 text-center text-5xl font-black text-white outline-none placeholder:text-slate-500"
+            />
+            {customSleepError && <p className="mt-4 text-lg font-bold text-rose-400">{customSleepError}</p>}
+            <div className="mt-8 flex justify-between text-xl text-slate-300">
+              <span><strong className="text-white">OK / Enter</strong> Timer starten</span>
+              <span><strong className="text-white">Zurück</strong> Abbrechen</span>
+            </div>
+          </form>
+        </div>
+      )}
 
       {favoriteRemovalTarget && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/90 px-24">
